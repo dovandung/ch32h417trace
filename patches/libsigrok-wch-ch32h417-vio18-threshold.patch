@@ -1,0 +1,93 @@
+diff --git a/src/hardware/wch-ch32h417/README.md b/src/hardware/wch-ch32h417/README.md
+index 10fad52..e3c925c 100644
+--- a/src/hardware/wch-ch32h417/README.md
++++ b/src/hardware/wch-ch32h417/README.md
+@@ -28,8 +28,13 @@ different protocol). The APP enumerates as `1a86:5537` (USB 2) or
+   to the session as they arrive. A trigger only counts once the
+   pre-trigger part is complete.
+ - Continuous acquisition: sample limit 0.
+-- Voltage threshold 0.45 ... 3.40 V, through the measured DAC calibration
+-  table of the ALL LOGIC driver.
++- Voltage threshold 0.55 ... 1.70 V (default 1.65 V). The inputs switch at
++  about half of their bank supply VIO18, so the driver sets VIO18 = 2 x
++  threshold (1.1 ... 3.4 V): 1.65 V for 3.3 V logic, 0.9 V for 1.8 V logic.
++  VIO18 is set through the measured DAC calibration table of the ALL LOGIC
++  driver. The nanoCH32H417 firmware sets its internal VIO18 regulator to
++  the nearest of 1.2 / 1.8 / 2.5 / 3.3 V, so use thresholds 0.6 / 0.9 /
++  1.25 / 1.65 V there.
+ - HSADC: enable A0 or A1 (one at a time) and disable all logic channels;
+   samples are sent in volts (0 ... 3.3 V). Rate 40 MHz / (div + 1), the
+   nearest to the selected sample rate, 1 ... 20 MS/s.
+diff --git a/src/hardware/wch-ch32h417/protocol.c b/src/hardware/wch-ch32h417/protocol.c
+index e710953..b7fd204 100644
+--- a/src/hardware/wch-ch32h417/protocol.c
++++ b/src/hardware/wch-ch32h417/protocol.c
+@@ -91,8 +91,8 @@ SR_PRIV int ch32_get_version(const struct sr_dev_inst *sdi)
+ }
+ 
+ /*
+- * Comparator threshold DAC: measured inverse table (non-linear, inverted:
+- * DAC 0 is about 3.44 V, DAC 1023 about 0.43 V).
++ * VIO18 regulator DAC: measured inverse table, VIO18 volts -> DAC code
++ * (non-linear, inverted: DAC 0 is about 3.44 V, DAC 1023 about 0.43 V).
+  */
+ SR_PRIV uint16_t ch32_vth_to_dac(double v)
+ {
+@@ -108,13 +108,18 @@ SR_PRIV uint16_t ch32_vth_to_dac(double v)
+ 	return ch32_vth_mv_to_dac[mv];
+ }
+ 
++/* threshold -> VIO18 = 2 x threshold (see protocol.h) */
+ SR_PRIV int ch32_apply_vth(const struct sr_dev_inst *sdi)
+ {
+ 	struct dev_context *devc = sdi->priv;
+-	uint16_t dac = ch32_vth_to_dac(devc->vth);
+-	uint8_t p[2] = { dac >> 8, dac & 0xff };
++	double vio = 2.0 * devc->vth;
++	uint16_t dac;
++	uint8_t p[2];
+ 
+-	sr_dbg("Threshold %.2f V -> DAC %u.", devc->vth, dac);
++	dac = ch32_vth_to_dac(vio);
++	p[0] = dac >> 8;
++	p[1] = dac & 0xff;
++	sr_dbg("Threshold %.2f V -> VIO18 %.2f V -> DAC %u.", devc->vth, vio, dac);
+ 	return ch32_cmd(sdi, CMD_SET_LOGIC_LEVEL, p, 2, NULL, 0);
+ }
+ 
+diff --git a/src/hardware/wch-ch32h417/protocol.h b/src/hardware/wch-ch32h417/protocol.h
+index a79daba..e4835cc 100644
+--- a/src/hardware/wch-ch32h417/protocol.h
++++ b/src/hardware/wch-ch32h417/protocol.h
+@@ -88,12 +88,28 @@
+ #define CH32_ADC_BITS		0x0a
+ #define CH32_ADC_VREF		3.3
+ 
+-/* comparator threshold range covered by the calibration table */
+-#define CH32_VTH_MIN		0.45
+-#define CH32_VTH_MAX		3.40
++/*
++ * Input threshold. The logic inputs are UHSIF pins in the chip's VIO18 bank
++ * and have no comparators: they switch at about VIO18 / 2. The analyzer
++ * board trims the VIO18 regulator with DAC1 (CMD_SET_LOGIC_LEVEL; the
++ * calibration table maps VIO18 volts to the DAC code), so the threshold
++ * is set as VIO18 = 2 x threshold. The default 1.65 V gives VIO18 = 3.3 V,
++ * the firmware's power-up level, which also takes 3.3 V signals without
++ * driving the inputs above their supply.
++ * VIO18 range: 1.1 V (chip minimum) ... 3.4 V (table maximum).
++ * nanoCH32H417 firmware (BOARD_NANO_CH32H417): no external regulator; the
++ * firmware turns the same DAC code back into volts and sets the internal
++ * VIO18 regulator to the nearest of 1.2 / 1.8 / 2.5 / 3.3 V. Thresholds
++ * 0.6 / 0.9 / 1.25 / 1.65 V select those levels exactly.
++ */
++#define CH32_VIO_MIN		1.10
++#define CH32_VIO_MAX		3.40
++#define CH32_VTH_MIN		(CH32_VIO_MIN / 2)
++#define CH32_VTH_MAX		(CH32_VIO_MAX / 2)
+ #define CH32_VTH_STEP		0.05
+ #define CH32_VTH_DEFAULT	1.65
+ 
++
+ #define CH32_CMD_TIMEOUT_MS	1000
+ #define CH32_NUM_TRANSFERS	16
+ #define CH32_BULK_TIMEOUT_MS	500

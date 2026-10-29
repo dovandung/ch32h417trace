@@ -1,0 +1,6 @@
+ch32trace
+ch32trace.exe
+winbuild/
+*.bin
+*.tpiu
+*.o
